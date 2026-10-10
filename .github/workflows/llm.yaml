@@ -1,0 +1,41 @@
+# LLM host CD (given in S6): llama.cpp chat and embedding servers on the LLM host, through its own
+# self-hosted runner (label lab-llm; scripts/register-runner.sh llm). The first deploy downloads the
+# models (~2.6 GB) into a volume; later deploys reuse them.
+#
+# Off until: gh variable set LAB_LLM --body on
+# Push-triggered only: a fork's pull request can't run anything here.
+name: llm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/compose.llm.yaml"
+      - ".github/workflows/llm.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.LAB_LLM == 'on'
+    runs-on: [self-hosted, lab-llm]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Deploy llama.cpp
+        run: docker compose -f deploy/compose.llm.yaml up -d --wait --wait-timeout 900
+      - name: Smoke test
+        # One short completion and one embedding. The first completion includes loading the model.
+        run: |
+          curl -fsS -m 300 http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
+            -d '{"messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 5, "temperature": 0}' |
+            jq -c '{reply: .choices[0].message.content, model, timings: {prompt_ms: .timings.prompt_ms, predicted_per_second: .timings.predicted_per_second}}'
+          curl -fsS -m 60 http://127.0.0.1:8081/v1/embeddings -H 'Content-Type: application/json' \
+            -d '{"input": ["search_query: test"], "model": "embed"}' | jq -e '.data[0].embedding | length == 768' >/dev/null
+          echo "embeddings: 768 dimensions"

@@ -1,0 +1,69 @@
+# LLM host stack (S6, given): llama.cpp's OpenAI-compatible server twice, chat and embeddings
+# (contracts/runtime.yaml: llm-chat 8080, llm-embed 8081). Deployed by .github/workflows/llm.yaml.
+#
+# Models are the ones benchmarked on m8g.large (scripts/verify 08): Qwen3-4B-Instruct-2507 at Q4_K_M for
+# chat and tool calls, nomic-embed-text-v1.5 (768 dimensions) for embeddings. The one-shot `models`
+# container downloads them once into a volume, pinned to a Hugging Face revision and checked by sha256.
+#
+# The ports are published on the host; the security group admits only the app and platform hosts.
+# Prompt caching matters: the system prompt and tool schemas stay a cached prefix, and new context goes
+# at the end (a cached prefix saved ~40 s per request in the benchmark).
+name: lab-llm
+
+x-llama: &llama
+  image: ghcr.io/ggml-org/llama.cpp:server-b11382
+  restart: unless-stopped
+  depends_on:
+    models: {condition: service_completed_successfully}
+  volumes:
+    - models:/models:ro
+
+services:
+  models:
+    image: curlimages/curl:8.21.0
+    restart: "no"
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        get() { # FILE URL SHA256
+          if [ -f "/models/$$1" ] && echo "$$3  /models/$$1" | sha256sum -c -s; then echo "$$1 present"; return; fi
+          curl -fsSL --retry 5 -o "/models/$$1.part" "$$2"
+          echo "$$3  /models/$$1.part" | sha256sum -c -s || { echo "$$1: sha256 mismatch" >&2; exit 1; }
+          mv "/models/$$1.part" "/models/$$1"
+          echo "$$1 downloaded"
+        }
+        get chat.gguf https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
+        get embed.gguf https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/0188c9bf409793f810680a5a431e7b899c46104c/nomic-embed-text-v1.5.Q8_0.gguf 3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7
+    volumes:
+      - models:/models
+
+  llm-chat:
+    <<: *llama
+    # One request at a time (-np 1): on two cores, parallel slots only split the same compute. --jinja
+    # applies the model's chat template, which is what makes tool calls parse (S7).
+    command: ["-m", "/models/chat.gguf", "--alias", "qwen3-4b-instruct-2507", "--jinja", "-c", "8192", "-np", "1",
+              "--host", "0.0.0.0", "--port", "8080", "--metrics"]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  llm-embed:
+    <<: *llama
+    command: ["-m", "/models/embed.gguf", "--alias", "nomic-embed-text-v1.5", "--embedding", "-c", "2048", "-b", "2048",
+              "-ub", "2048", "--host", "0.0.0.0", "--port", "8081", "--metrics"]
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  models:

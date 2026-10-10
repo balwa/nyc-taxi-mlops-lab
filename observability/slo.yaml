@@ -1,0 +1,9 @@
+# Service level objectives for the ride app (S5, decision 013). rules/slo.rules.yaml computes them.
+# One entry per SLO: what's measured (the SLI, from contracts/metrics.yaml), the objective, why that
+# number, and the alert that tells you it's being missed.
+slos:
+  - name: predict-availability
+    sli:
+    objective:
+    why:
+    alert:

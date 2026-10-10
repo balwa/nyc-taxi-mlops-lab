@@ -1,0 +1,65 @@
+# Alloy on a lab host (S5, given): scrapes the host, its containers and (on the app host) the lab's
+# services, and sends them to your Grafana Cloud stack. Deployed by .github/workflows/observability.yaml
+# with LAB_HOST=app or LAB_HOST=platform, which picks observability/alloy/<host>.alloy.
+#
+# Credentials: alloy-secrets copies lab/grafana from Secrets Manager into a volume at deploy time, as
+# LabRole. Nothing about Grafana Cloud is in this repo or in GitHub. After rotating the token, redeploy.
+# Alloy's own UI and metrics: http://127.0.0.1:12345 on the host (SSM port forwarding), never published.
+name: lab-obs
+
+services:
+  alloy-secrets:
+    image: public.ecr.aws/aws-cli/aws-cli:2.37.7
+    restart: "no"
+    environment:
+      AWS_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - aws secretsmanager get-secret-value --secret-id lab/grafana --query SecretString --output text > /secrets/grafana.json.tmp && mv /secrets/grafana.json.tmp /secrets/grafana.json
+    volumes:
+      - alloy-secrets:/secrets
+
+  alloy:
+    image: grafana/alloy:v1.19.2
+    restart: unless-stopped
+    # The host and container series carry this as `instance`: a stable name, or every redeploy would
+    # mint a new set of series.
+    hostname: lab-${LAB_HOST}
+    # cAdvisor reads every container's cgroup: it needs the host's cgroup namespace and /sys, or it only
+    # sees Alloy's own.
+    cgroup: host
+    depends_on:
+      alloy-secrets: {condition: service_completed_successfully}
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/${LAB_HOST:?set LAB_HOST to app or platform}.alloy
+    environment:
+      LAB_HOST: ${LAB_HOST}
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ../observability/alloy:/etc/alloy:ro
+      - alloy-secrets:/secrets:ro
+      # No volume for /var/lib/alloy/data (the write-ahead log): every redeploy starts a fresh one, so its
+      # active-series count (the grader's view of your budget) reflects your current rules at once,
+      # instead of remembering dropped series for up to two hours.
+      # Host metrics (prometheus.exporter.unix)
+      - /proc:/host/proc:ro
+      - /sys:/sys:ro
+      - /:/host/root:ro
+      - /run/udev/data:/run/udev/data:ro
+      # Container metrics (prometheus.exporter.cadvisor). The Docker socket lets Alloy query the Docker
+      # API, which is root-equivalent on this host even mounted read-only: the cost of per-container
+      # metrics. Traefik deliberately has no socket.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker:/var/lib/docker:ro
+
+volumes:
+  alloy-secrets:
+
+networks:
+  default:
+    name: lab
+    external: true  # the app host's services are on it; the workflow creates it on the platform host

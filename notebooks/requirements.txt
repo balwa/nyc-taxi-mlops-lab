@@ -1,0 +1,5 @@
+# Installed into the notebook's python3 kernel at every start (infra/modules/notebook). The kernel is
+# Python 3.10 with its own pandas 2.x; tripmodel works with both, and models load in either.
+lightgbm==4.7.0
+mlflow-skinny==3.17.0
+pyarrow==21.0.0

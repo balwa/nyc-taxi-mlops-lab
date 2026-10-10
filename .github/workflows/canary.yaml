@@ -1,0 +1,54 @@
+# Canary (given in S8): put steady traffic on the app, run deploy/canary.sh (your steps and abort rule),
+# and keep the result as an artifact (canary-result), which the grader reads. Promotion stays separate:
+# after a canary that held, run promote.yaml (approval-gated) for the challenger.
+# Push-free: dispatch only (gh workflow run canary.yaml). Needs S5's Grafana Cloud secret.
+name: canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: Requests per second of synthetic rider traffic during the canary
+        required: false
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: [self-hosted, lab-app]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Traffic
+        run: |
+          nohup deploy/traffic.py 2400 "${{ inputs.rate }}" > /tmp/traffic.log 2>&1 &
+          echo $! > /tmp/traffic.pid
+          sleep 60  # a minute of both aliases at their current weights before the first step
+      - name: Canary
+        run: deploy/canary.sh canary-result.json
+      - name: Stop the traffic
+        if: always()
+        run: |
+          kill "$(cat /tmp/traffic.pid)" 2>/dev/null || true
+          sleep 1
+          tail -1 /tmp/traffic.log
+      - name: Summary
+        if: always()
+        run: |
+          [ -f canary-result.json ] || exit 0
+          jq -r '"### canary: \(.outcome) (challenger v\(.challenger_version) vs champion v\(.champion_version))",
+                 (.steps[] | "- \(.weight)%: \(.outcome) \(.reason) (p95 \(.challenger_p95_ms) vs \(.champion_p95_ms) ms, errors \(.challenger_error_ratio))")' \
+            canary-result.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: canary-result
+          path: canary-result.json
+          if-no-files-found: ignore
+          retention-days: 7

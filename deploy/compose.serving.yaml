@@ -1,0 +1,30 @@
+# Model serving on the app host (S3, given): one container per MLflow alias, deployed by
+# .github/workflows/serving.yaml. Traefik (compose.web.yaml) routes the serving entrypoint between them
+# by weight: 100/0 until S8's canary moves it.
+name: lab-serving
+
+services:
+  serving-champion:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/serving:${SERVING_TAG:?set SERVING_TAG}
+    restart: unless-stopped
+    environment:
+      MODEL_ALIAS: champion
+      MODEL_NAME: trip-duration
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:?set MLFLOW_TRACKING_URI}
+    expose:
+      - "8001"
+
+  serving-challenger:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/serving:${SERVING_TAG:?set SERVING_TAG}
+    restart: unless-stopped
+    environment:
+      MODEL_ALIAS: challenger
+      MODEL_NAME: trip-duration
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:?set MLFLOW_TRACKING_URI}
+    expose:
+      - "8001"
+
+networks:
+  default:
+    name: lab
+    external: true

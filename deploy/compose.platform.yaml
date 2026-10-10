@@ -1,0 +1,86 @@
+# Platform host stack: Dagster (S1) and MLflow (S2) on the pipelines image, plus a one-shot job that
+# creates their databases on RDS.
+#
+# The webserver listens on the host's loopback only. Reach it from your laptop with SSM:
+#   aws ssm start-session --target <platform_instance_id> --document-name AWS-StartPortForwardingSession \
+#     --parameters portNumber=3000,localPortNumber=3000      (MLflow: 5000)
+# Credentials: the instance profile (LabRole) for AWS; the RDS password is read from Secrets Manager
+# when each container starts (pipelines/src/labpipes/runtime.py), so nothing secret is in this file.
+name: platform
+
+x-pipelines: &pipelines
+  image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/pipelines:${IMAGE_TAG:?set IMAGE_TAG}
+  restart: unless-stopped
+  environment:
+    AWS_REGION: us-east-1
+    IMAGE_TAG: ${IMAGE_TAG}
+    LAB_DATA_BUCKET: ${LAB_DATA_BUCKET:?set LAB_DATA_BUCKET}
+    REDSHIFT_CLUSTER_ID: ${REDSHIFT_CLUSTER_ID:-lab}
+    REDSHIFT_DATABASE: ${REDSHIFT_DATABASE:-lab}
+    REDSHIFT_DB_USER: labadmin
+    RDS_SECRET_NAME: lab/rds
+    DAGSTER_PG_DB: dagster
+    LAB_DATABASES: dagster,mlflow,rag
+    LLM_HOST: ${LLM_HOST:-}  # S6: the embedding server for wiki_embeddings
+    LAB_ARTIFACT_BUCKET: ${LAB_ARTIFACT_BUCKET:?set LAB_ARTIFACT_BUCKET}
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+  volumes:
+    - dagster-storage:/opt/dagster/home/storage
+
+services:
+  db-init:
+    <<: *pipelines
+    restart: "no"
+    command: ["--init-db"]
+
+  code:
+    <<: *pipelines
+    command: ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000", "-m", "labpipes.definitions"]
+    depends_on:
+      db-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  webserver:
+    <<: *pipelines
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      code: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/server_info', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  daemon:
+    <<: *pipelines
+    command: ["dagster-daemon", "run", "-w", "workspace.yaml"]
+    depends_on:
+      code: {condition: service_healthy}
+
+  # MLflow tracking server and registry (S2). On all interfaces: serving on the app host (S3) reaches
+  # it at the platform host's private IP, and the security group admits only the app host.
+  mlflow:
+    <<: *pipelines
+    command: ["--mlflow-server"]
+    ports:
+      - "5000:5000"
+    depends_on:
+      db-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+
+volumes:
+  dagster-storage:

@@ -1,0 +1,15 @@
+// Alloy on the app host (S5, given): the host, its containers, and the lab's services on the `lab`
+// network (contracts/metrics.yaml says what each serves).
+import.file "common" {
+	filename = "/etc/alloy/common.alloy"
+}
+
+common.lab "app" {
+	lab_targets = [
+		{"__address__" = "traefik:8082", "job" = "traefik"},
+		{"__address__" = "app-blue:8000", "job" = "app", "colour" = "blue"},
+		{"__address__" = "app-green:8000", "job" = "app", "colour" = "green"},
+		{"__address__" = "serving-champion:8001", "job" = "serving"},
+		{"__address__" = "serving-challenger:8001", "job" = "serving"},
+	]
+}

@@ -1,0 +1,89 @@
+openapi: 3.1.0
+info:
+  title: Ride app support assistant
+  version: 1.0.0
+  description: |
+    The app's assistant endpoint (same service as openapi.yaml, same public port). It answers a rider's
+    question from the ops wiki (retrieval from pgvector) with the LLM host's chat model (S6), and from S7
+    may call MCP tools (contracts/mcp-tools.json). Frozen in S6.
+    Answers are slow by design (tens of seconds on a CPU LLM host); clients should wait up to 120 s.
+paths:
+  /assist:
+    post:
+      operationId: assist
+      summary: Answer a rider's question.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AssistRequest"}
+      responses:
+        "200":
+          description: An answer, with the wiki chunks it was given and the tools it called
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AssistResponse"}
+        "422":
+          description: Invalid input
+        "503":
+          description: The assistant isn't configured yet, or the LLM host or vector store can't be reached
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+components:
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: {type: string}
+    AssistRequest:
+      type: object
+      additionalProperties: false
+      required: [question]
+      properties:
+        question: {type: string, minLength: 1, maxLength: 500}
+        use_wiki:
+          type: boolean
+          default: true
+          description: false skips retrieval, to compare an answer with and without the wiki
+    Source:
+      type: object
+      required: [page_id, title, chunk_id, score]
+      properties:
+        page_id: {type: string}
+        title: {type: string}
+        chunk_id: {type: string}
+        score: {type: number, description: cosine similarity, higher is closer}
+    ToolCall:
+      type: object
+      required: [name, arguments, ok]
+      properties:
+        name: {type: string, description: an MCP tool from contracts/mcp-tools.json}
+        arguments: {type: object}
+        ok: {type: boolean, description: false when the call was refused or failed}
+    AssistResponse:
+      type: object
+      required: [answer, sources, tool_calls, model, timings_ms, trace_id]
+      properties:
+        answer: {type: string}
+        sources:
+          type: array
+          items: {$ref: "#/components/schemas/Source"}
+        tool_calls:
+          type: array
+          description: empty before S7
+          items: {$ref: "#/components/schemas/ToolCall"}
+        model:
+          type: object
+          required: [chat, embed]
+          properties:
+            chat: {type: string}
+            embed: {type: string}
+        timings_ms:
+          type: object
+          description: where the time went (embed, retrieve, generate, tools)
+          additionalProperties: {type: number}
+        trace_id:
+          type: [string, "null"]
+          description: the Langfuse trace id when tracing is on, else null

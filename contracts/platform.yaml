@@ -1,0 +1,49 @@
+# Platform contract: the warehouse, the orchestrator's storage, and the names that the pipeline,
+# the MCP server (S7), the notebook and the grader share. Frozen in S1.
+# Hosts, ports and the data bucket layout stay in runtime.yaml.
+
+version: 1
+
+warehouse:
+  engine: redshift
+  cluster_id: lab
+  database: lab
+  # Redshift Data API with temporary credentials for a named database user (--db-user).
+  # No passwords anywhere: the admin password is write-only in Terraform and stored nowhere.
+  access: data-api
+  users:
+    pipeline: labadmin   # Dagster: owns every schema below
+    readonly: lab_ro     # S7's MCP server: SELECT on marts only
+  schemas: [ingest, staging, marts]   # not "raw": a Redshift reserved word
+  tables:
+    taxi_zones: ingest.taxi_zones
+    raw_trips: ingest.raw_trips
+    stg_trips: staging.stg_trips
+    zone_hour_stats: marts.zone_hour_stats   # DDL in marts.sql
+
+orchestrator:
+  engine: dagster
+  storage: {database: dagster, secret: rds}   # the RDS instance from S0
+  # One partition per file under runtime.yaml data.trips, added by the sensor as files land.
+  partitions: {name: trip_months, key_format: "YYYY-MM"}
+  assets: [taxi_zones, trip_files, raw_trips, stg_trips, zone_hour_stats]
+  # Blocking checks the grader looks for. Other checks and all thresholds are the student's.
+  blocking_checks:
+    trip_files: [schema_contract]   # the Parquet footer against trips.schema.yaml, before COPY
+
+# Secrets Manager names (JSON payloads), in addition to runtime.yaml's.
+secrets:
+  rds: {name: lab/rds, keys: [username, password, host, port, dbname]}
+
+# Environment variables read by the pipelines image, in addition to runtime.yaml's.
+env:
+  REDSHIFT_CLUSTER_ID: warehouse.cluster_id
+  REDSHIFT_DATABASE: warehouse.database
+  REDSHIFT_DB_USER: the database user this service connects as
+  RDS_SECRET_NAME: secrets.rds.name
+
+images: [pipelines]
+
+terraform_outputs:
+  - redshift_cluster_id
+  - redshift_database

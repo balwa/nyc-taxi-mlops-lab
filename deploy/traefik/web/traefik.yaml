@@ -1,0 +1,27 @@
+# Traefik static config for the S3 app host (compose.web.yaml). Routing lives in the lab-traefik volume:
+# routes.yaml from this directory (deploy/web.sh prepare copies it), and the live weights that
+# deploy/web.sh writes (app-live.yaml, serving-live.yaml). The volume outlives checkouts and reboots.
+entryPoints:
+  web:
+    address: ":80"
+  serving:
+    address: ":8001"
+  # Prometheus metrics (S5), for Alloy on the lab network only: never published by compose.web.yaml.
+  metrics:
+    address: ":8082"
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addRoutersLabels: false
+    addServicesLabels: true  # per-service latency: what S8's canary compares between the two aliases
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]
+api:
+  dashboard: false
+log:
+  level: INFO
+accessLog: {}

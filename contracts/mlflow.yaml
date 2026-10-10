@@ -1,0 +1,42 @@
+# MLflow names, aliases and the facts every model version carries. Frozen in S2. The pipeline writes
+# them, serving (S3) loads by alias, the MCP server's get_model_info (S7) reads the version tags, and
+# the grader checks them. The server itself is in runtime.yaml (service mlflow, MLFLOW_TRACKING_URI).
+version: 1
+
+experiment: trip-duration
+registered_model: trip-duration
+
+aliases:
+  champion: what serving answers with. Moved only by the approval-gated promotion workflow (S3).
+  challenger: set by the pipeline when a new version beats the champion (or, before there is one, the v1 baseline) within the latency budget. Never champion.
+
+model:
+  flavor: pyfunc                     # mlflow.pyfunc.load_model("models:/trip-duration@champion")
+  inputs: features.yaml inputs, then est_distance_miles (optional), in that order
+  output: duration_min (double)
+  code: tripmodel                    # bundled with the model (code_paths), so loading needs no pipeline code
+
+# Logged on the training run and copied to the model version as tags, with these names.
+metrics:
+  - mae_min                          # holdout MAE, minutes
+  - p95_latency_ms                   # single-row predict, in process
+  - champion_mae_min                 # what it was compared against (baseline MAE if no champion)
+  - mae_min.airport
+  - mae_min.manhattan
+  - mae_min.outer
+  - mae_min.night
+
+version_tags:
+  - training_window                  # YYYY-MM..YYYY-MM
+  - holdout_month                    # YYYY-MM
+  - features_version                 # features.yaml version
+  - git_sha                          # commit of the pipeline that trained it
+  - mae_min
+  - p95_latency_ms
+  - champion_mae_min
+
+pipeline:
+  assets: [trip_features, training_set, trained_model, eval_report, challenger]
+  blocking_checks:
+    trip_features: [feature_contract]   # the table's columns against features.yaml
+    eval_report: [beats_champion]       # guards the challenger alias

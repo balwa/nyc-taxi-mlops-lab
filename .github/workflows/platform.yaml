@@ -1,0 +1,111 @@
+# Platform CD (given in S1): test and build the pipelines image, then deploy Dagster on the platform
+# host. Same shape as your S0 pipeline: arm64 build on a GitHub-hosted runner with GITHUB_TOKEN, deploy
+# through the self-hosted runner on the platform host (label lab-platform) with its instance profile.
+#
+# Off until you set two repository variables (stages/S1.md), so it stays quiet before S1:
+#   gh variable set LAB_PLATFORM --body on
+#   gh variable set LAB_DATA_BUCKET --body <the instructor's data bucket>
+#   gh variable set LAB_ARTIFACT_BUCKET --body "$(terraform -chdir=infra/live output -raw artifact_bucket)"   (S2)
+#   gh variable set LLM_HOST --body "$(terraform -chdir=infra/live output -raw llm_private_ip)"   (S6)
+# Push-triggered only: a fork's pull request can't run anything here, let alone on your host.
+name: platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pipelines/**"
+      - "contracts/**"
+      - "deploy/compose.platform.yaml"
+      - ".github/workflows/platform.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: vars.LAB_PLATFORM == 'on'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: make test-pipelines
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.img.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Image name and tag
+        id: img
+        run: |
+          echo "prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: pipelines/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.img.outputs.prefix }}/pipelines:${{ steps.img.outputs.tag }}
+          build-args: GIT_SHA=${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=pipelines
+          cache-to: type=gha,scope=pipelines,mode=max
+      - name: The code location loads inside the image
+        # Catches what unit tests can't: a missing system library (LightGBM needs libgomp1), a file
+        # left out of the image. Dummy settings: loading reads no AWS.
+        run: |
+          docker run --rm --entrypoint python \
+            -e REDSHIFT_CLUSTER_ID=x -e REDSHIFT_DATABASE=x -e REDSHIFT_DB_USER=x \
+            -e LAB_DATA_BUCKET=x -e LAB_ARTIFACT_BUCKET=x -e MLFLOW_TRACKING_URI=http://x -e LLM_HOST=x \
+            "${{ steps.img.outputs.prefix }}/pipelines:${{ steps.img.outputs.tag }}" \
+            -c "import labpipes.definitions as d; print(len(d.defs.resolve_asset_graph().get_all_asset_keys()), 'assets')"
+
+  deploy:
+    needs: image
+    runs-on: [self-hosted, lab-platform]
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ needs.image.outputs.tag }}
+      LAB_DATA_BUCKET: ${{ vars.LAB_DATA_BUCKET }}
+      LAB_ARTIFACT_BUCKET: ${{ vars.LAB_ARTIFACT_BUCKET }}
+      LLM_HOST: ${{ vars.LLM_HOST }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy
+        run: |
+          export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker compose -f deploy/compose.platform.yaml pull
+          docker compose -f deploy/compose.platform.yaml up -d --wait --remove-orphans
+      - name: Smoke test
+        run: |
+          curl -fsS --retry 10 --retry-all-errors --retry-delay 3 http://127.0.0.1:3000/server_info
+          echo
+          # The code location loaded: the webserver can list its assets.
+          curl -fsS http://127.0.0.1:3000/graphql -H 'Content-Type: application/json' \
+            -d '{"query":"{ assetNodes { assetKey { path } } }"}' | jq -e '[.data.assetNodes[].assetKey.path[0]] | index("trip_files")'
+          curl -fsS --retry 10 --retry-all-errors --retry-delay 3 http://127.0.0.1:5000/health

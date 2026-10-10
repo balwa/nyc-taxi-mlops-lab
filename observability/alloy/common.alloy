@@ -1,0 +1,76 @@
+// Shared by app.alloy and platform.alloy (S5, given): where metrics go, and the host and container
+// exporters every host runs. Everything passes through budget.alloy's rules before it leaves the host.
+
+declare "lab" {
+	argument "lab_targets" {
+		comment  = "The lab's own services to scrape on this host (empty on the platform host)."
+		optional = true
+		default  = []
+	}
+
+	// Grafana Cloud: the alloy-secrets container copies lab/grafana from Secrets Manager into this file
+	// at deploy time, as {"url": ".../api/prom/push", "user": "<instance id>", "token": "glc_..."}.
+	local.file "grafana" {
+		filename = "/secrets/grafana.json"
+	}
+
+	prometheus.remote_write "grafana" {
+		endpoint {
+			url = encoding.from_json(local.file.grafana.content)["url"]
+
+			basic_auth {
+				username = encoding.from_json(local.file.grafana.content)["user"]
+				password = encoding.from_json(local.file.grafana.content)["token"]
+			}
+		}
+		external_labels = {host = sys.env("LAB_HOST")}
+	}
+
+	// The host itself: CPU, memory, disk, network (node_exporter's metrics, built in).
+	prometheus.exporter.unix "host" {
+		procfs_path = "/host/proc"
+		sysfs_path  = "/sys"
+		rootfs_path = "/host/root"
+	}
+
+	prometheus.scrape "host" {
+		targets         = prometheus.exporter.unix.host.targets
+		scrape_interval = "30s"
+		forward_to      = [budget.host.default.receiver]
+	}
+
+	// Every container on the host (cAdvisor, built in). It reads the Docker socket: see the README for
+	// what that gives Alloy.
+	prometheus.exporter.cadvisor "containers" {
+		docker_host = "unix:///var/run/docker.sock"
+		docker_only = true
+	}
+
+	prometheus.scrape "containers" {
+		targets         = prometheus.exporter.cadvisor.containers.targets
+		scrape_interval = "30s"
+		forward_to      = [budget.containers.default.receiver]
+	}
+
+	prometheus.scrape "lab" {
+		targets         = argument.lab_targets.value
+		scrape_interval = "15s"
+		forward_to      = [budget.services.default.receiver]
+	}
+
+	import.file "budget" {
+		filename = "/etc/alloy/budget.alloy"
+	}
+
+	budget.host "default" {
+		forward_to = [prometheus.remote_write.grafana.receiver]
+	}
+
+	budget.containers "default" {
+		forward_to = [prometheus.remote_write.grafana.receiver]
+	}
+
+	budget.services "default" {
+		forward_to = [prometheus.remote_write.grafana.receiver]
+	}
+}

@@ -1,0 +1,6 @@
+// Alloy on the platform host (S5, given): the host and its containers (Dagster, MLflow).
+import.file "common" {
+	filename = "/etc/alloy/common.alloy"
+}
+
+common.lab "platform" { }

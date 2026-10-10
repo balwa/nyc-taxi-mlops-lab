@@ -1,0 +1,16 @@
+# Every request goes to the app service. S3 adds weighted services for blue-green here.
+http:
+  routers:
+    app:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      service: app
+  services:
+    app:
+      loadBalancer:
+        servers:
+          - url: http://app:8000
+        healthCheck:
+          path: /healthz
+          interval: 10s
+          timeout: 3s

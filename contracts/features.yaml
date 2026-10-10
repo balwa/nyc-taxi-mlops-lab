@@ -1,0 +1,34 @@
+# The model's inputs and label. Frozen in S2. The pipeline builds them (staging.trip_features), the
+# blocking feature_contract check enforces them, and serving (S3) and the MCP server (S7) send exactly
+# these columns. Nothing known only after a trip may be an input: that is what a leaky model uses.
+version: 1
+
+table: staging.trip_features
+keys:
+  - {name: trip_month, type: char(7)}          # partition key, not a model input
+inputs:
+  - {name: pickup_zone_id, type: integer, range: [1, 263]}
+  - {name: dropoff_zone_id, type: integer, range: [1, 263]}
+  - {name: pickup_hour, type: smallint, range: [0, 23]}      # New York local time, as TLC records it
+  - {name: pickup_dow, type: smallint, range: [0, 6]}        # 0 = Sunday (Redshift extract(dow))
+derived:
+  # Not a column of the table: the median trip_distance of the zone pair over the training window.
+  # The model carries that lookup and fills the input when a caller leaves it empty (serving does,
+  # unless the app passes a routing estimate as trip_distance_miles).
+  - {name: est_distance_miles, type: double precision, required: false}
+label: {name: duration_min, type: double precision, range: [0, 180], exclusive_min: true}
+
+# Known only after the trip ends. Never an input, never a column of the table.
+forbidden:
+  - dropoff_at
+  - trip_distance
+  - fare_amount
+  - extra
+  - mta_tax
+  - tip_amount
+  - tolls_amount
+  - improvement_surcharge
+  - total_amount
+  - congestion_surcharge
+  - airport_fee
+  - payment_type

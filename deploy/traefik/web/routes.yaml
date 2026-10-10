@@ -1,0 +1,53 @@
+# Routes for the S3 app host. The weighted services they point at (app-live, serving-live) are written by
+# deploy/web.sh, so a switch or a canary step never edits this file. /metrics is never routed from the
+# public entrypoint: Alloy scrapes the containers directly (contracts/metrics.yaml).
+http:
+  routers:
+    app:
+      rule: PathPrefix(`/`) && !PathPrefix(`/metrics`)
+      entryPoints: [web]
+      service: app-live
+    # Pin a request to one colour (smoke tests before a switch): curl -H 'X-Lab-Color: green' ...
+    app-blue:
+      rule: Header(`X-Lab-Color`, `blue`) && !PathPrefix(`/metrics`)
+      entryPoints: [web]
+      service: app-blue
+      priority: 100
+    app-green:
+      rule: Header(`X-Lab-Color`, `green`) && !PathPrefix(`/metrics`)
+      entryPoints: [web]
+      service: app-green
+      priority: 100
+    serving:
+      rule: PathPrefix(`/`)
+      entryPoints: [serving]
+      service: serving-live
+    # Pin a request to one alias: curl -H 'X-Lab-Alias: challenger' http://127.0.0.1:8001/model
+    serving-champion:
+      rule: Header(`X-Lab-Alias`, `champion`)
+      entryPoints: [serving]
+      service: serving-champion
+      priority: 100
+    serving-challenger:
+      rule: Header(`X-Lab-Alias`, `challenger`)
+      entryPoints: [serving]
+      service: serving-challenger
+      priority: 100
+  services:
+    app-blue:
+      loadBalancer:
+        servers: [{url: "http://app-blue:8000"}]
+        healthCheck: {path: /healthz, interval: 5s, timeout: 2s}
+    app-green:
+      loadBalancer:
+        servers: [{url: "http://app-green:8000"}]
+        healthCheck: {path: /healthz, interval: 5s, timeout: 2s}
+    # /model answers 503 until the alias exists, so a container without a model gets no traffic.
+    serving-champion:
+      loadBalancer:
+        servers: [{url: "http://serving-champion:8001"}]
+        healthCheck: {path: /model, interval: 5s, timeout: 2s}
+    serving-challenger:
+      loadBalancer:
+        servers: [{url: "http://serving-challenger:8001"}]
+        healthCheck: {path: /model, interval: 5s, timeout: 2s}

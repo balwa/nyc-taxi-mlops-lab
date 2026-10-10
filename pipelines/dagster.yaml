@@ -1,0 +1,33 @@
+# Dagster instance for the platform host. Storage: the `dagster` database on the lab's RDS instance;
+# credentials are put in the environment at container start (labpipes/runtime.py), never written here.
+storage:
+  postgres:
+    postgres_db:
+      hostname: {env: DAGSTER_PG_HOST}
+      username: {env: DAGSTER_PG_USERNAME}
+      password: {env: DAGSTER_PG_PASSWORD}
+      db_name: {env: DAGSTER_PG_DB}
+      port: 5432
+      # SQLAlchemy 2.1 defaults postgresql:// to psycopg 3; dagster-postgres ships psycopg2.
+      scheme: postgresql+psycopg2
+
+# Runs execute inside the code-server container (no Docker socket anywhere), queued by the daemon.
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+concurrency:
+  # Two runs at a time keeps the t4g.large's 8 GB safe once S2 trains LightGBM in a run.
+  runs:
+    max_concurrent_runs: 2
+  # Assets that write to Redshift share pool "redshift", one step at a time: concurrent deletes and
+  # inserts on one table abort with serializable isolation errors.
+  pools:
+    granularity: op
+    default_limit: 1
+
+telemetry:
+  enabled: false

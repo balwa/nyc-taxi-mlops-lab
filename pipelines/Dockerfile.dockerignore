@@ -1,0 +1,9 @@
+# Build context is the repo root: send only what the image needs.
+*
+!pipelines/pyproject.toml
+!pipelines/uv.lock
+!pipelines/src
+!pipelines/dagster.yaml
+!pipelines/workspace.yaml
+!contracts
+**/__pycache__

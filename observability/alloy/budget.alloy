@@ -1,0 +1,49 @@
+// Your series budget (S5, decision 014). Every series from this host passes through one of these three
+// before it's sent. Grafana Cloud's free tier allows 10,000 active series for all hosts together
+// (contracts/metrics.yaml). With no rules, everything is sent.
+//
+// Rules are Prometheus relabelling (https://grafana.com/docs/alloy/latest/reference/components/prometheus/prometheus.relabel/):
+//   rule { source_labels = ["__name__"]  regex = "node_(cpu|memory)_.*"  action = "keep" }
+//   rule { regex = "id"  action = "labeldrop" }
+
+declare "host" {
+	argument "forward_to" { }
+
+	prometheus.relabel "rules" {
+		forward_to = argument.forward_to.value
+
+		// Your rules for the host's series: CPU? memory? disk? which network devices?
+	}
+
+	export "receiver" {
+		value = prometheus.relabel.rules.receiver
+	}
+}
+
+declare "containers" {
+	argument "forward_to" { }
+
+	prometheus.relabel "rules" {
+		forward_to = argument.forward_to.value
+
+		// Your rules for the containers' series: which metrics, and which labels change on every deploy?
+	}
+
+	export "receiver" {
+		value = prometheus.relabel.rules.receiver
+	}
+}
+
+declare "services" {
+	argument "forward_to" { }
+
+	prometheus.relabel "rules" {
+		forward_to = argument.forward_to.value
+
+		// Your rules for the services' series (contracts/metrics.yaml, Traefik, runtime metrics).
+	}
+
+	export "receiver" {
+		value = prometheus.relabel.rules.receiver
+	}
+}

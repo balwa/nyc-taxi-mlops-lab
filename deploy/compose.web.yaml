@@ -1,0 +1,83 @@
+# App host from S3: Traefik in front of two app colours (blue-green), routing model calls to the serving
+# containers (compose.serving.yaml) on an internal entrypoint. Same project name as S0's compose.app.yaml,
+# so the first deploy with this file replaces S0's containers (use --remove-orphans).
+#
+# Each colour runs its own image tag: BLUE_TAG / GREEN_TAG (deploy/web.sh tag <colour> prints the running
+# one, so a deploy can change one colour and leave the other as it is). Which colour gets traffic lives in
+# the Traefik volume, not in this repo: deploy/web.sh switch <colour>.
+name: lab-app
+
+x-app: &app
+  restart: unless-stopped
+  expose:
+    - "8000"
+  volumes:
+    - app-secrets:/secrets:ro  # rds.json, langfuse.json (S6): see app-secrets below
+
+services:
+  traefik:
+    image: traefik:v3.7.13
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # Serving entrypoint: reachable from the host (promotion's /reload) and the lab network, never published.
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./traefik/web/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - traefik-dynamic:/etc/traefik/dynamic
+    labels:
+      # deploy/web.sh prepare sets it, so a change to the static config recreates Traefik on the next
+      # deploy (Compose doesn't notice a bind-mounted file changing).
+      lab.static-config: ${TRAEFIK_CONFIG_HASH:-unset}
+
+  app-blue:
+    <<: *app
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/app:${BLUE_TAG:-none}
+    environment:
+      IMAGE_TAG: ${BLUE_TAG:-none}
+      SERVING_URL: http://traefik:8001
+      LLM_HOST: ${LLM_HOST:-}
+      MCP_URL: http://mcp:8002/mcp  # S7: the assistant's tools (compose.mcp.yaml)
+
+  app-green:
+    <<: *app
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/app:${GREEN_TAG:-none}
+    environment:
+      IMAGE_TAG: ${GREEN_TAG:-none}
+      SERVING_URL: http://traefik:8001
+      LLM_HOST: ${LLM_HOST:-}
+      MCP_URL: http://mcp:8002/mcp  # S7: the assistant's tools (compose.mcp.yaml)
+
+  # One-shot (S6): copies lab/rds and lab/langfuse from Secrets Manager into a volume the app reads, as
+  # LabRole. deploy/web.sh prepare runs it before every deploy, so a rotated secret lands with the next one.
+  # A secret that doesn't exist yet is skipped. Not started by `up`: it's in the `secrets` profile.
+  app-secrets:
+    image: public.ecr.aws/aws-cli/aws-cli:2.37.7
+    profiles: [secrets]
+    restart: "no"
+    environment:
+      AWS_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for s in rds langfuse; do
+          if aws secretsmanager get-secret-value --secret-id "lab/$$s" --query SecretString --output text > "/secrets/.$$s.json" 2>/dev/null; then
+            mv "/secrets/.$$s.json" "/secrets/$$s.json"; echo "lab/$$s copied"
+          else
+            rm -f "/secrets/.$$s.json"; echo "lab/$$s: no value yet, skipped"
+          fi
+        done
+    volumes:
+      - app-secrets:/secrets
+
+volumes:
+  app-secrets:
+    name: lab-app-secrets
+  traefik-dynamic:
+    name: lab-traefik
+    external: true  # deploy/web.sh prepare creates it
+
+networks:
+  default:
+    name: lab
+    external: true  # shared with compose.serving.yaml; deploy/web.sh prepare creates it

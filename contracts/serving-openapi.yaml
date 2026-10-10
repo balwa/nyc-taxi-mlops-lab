@@ -1,0 +1,132 @@
+openapi: 3.1.0
+info:
+  title: Model serving
+  version: 1.0.0
+  description: |
+    The serving service on the app host (runtime.yaml: serving, port 8001). One container per MLflow
+    alias: serving-champion and serving-challenger, behind Traefik's weighted service on port 8001.
+    Callers: the app (S3), the MCP server (S7), the canary (S8), the grader. Frozen in S3.
+    Inputs are contracts/features.yaml's, with its encodings (pickup_dow: 0 = Sunday).
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: The process is up (it may not have a model yet; see /model).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /model:
+    get:
+      operationId: getModel
+      summary: The model this container serves, or 503 while its alias doesn't exist yet.
+      responses:
+        "200":
+          description: Loaded model
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LoadedModel"}
+        "503":
+          description: No model loaded
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /predict:
+    post:
+      operationId: predict
+      summary: Predicted trip duration in minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PredictRequest"}
+      responses:
+        "200":
+          description: Prediction
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PredictResponse"}
+        "422":
+          description: Invalid input
+        "503":
+          description: No model loaded
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /reload:
+    post:
+      operationId: reload
+      summary: Re-resolve this container's alias in MLflow and swap to that version if it changed.
+      description: Internal (port 8001 is never published). The previous model keeps answering until the new one has loaded.
+      responses:
+        "200":
+          description: Reloaded, or already current
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReloadResponse"}
+        "503":
+          description: The alias doesn't exist, or MLflow can't be reached
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok]}
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: {type: string}
+    PredictRequest:
+      type: object
+      additionalProperties: false
+      required: [pickup_zone_id, dropoff_zone_id, pickup_hour, pickup_dow]
+      properties:
+        pickup_zone_id: {type: integer, minimum: 1, maximum: 263}
+        dropoff_zone_id: {type: integer, minimum: 1, maximum: 263}
+        pickup_hour: {type: integer, minimum: 0, maximum: 23}
+        pickup_dow: {type: integer, minimum: 0, maximum: 6, description: 0 = Sunday}
+        est_distance_miles:
+          type: [number, "null"]
+          exclusiveMinimum: 0
+          maximum: 100
+          description: Optional; the model estimates it from the zone pair when absent.
+    ModelRef:
+      type: object
+      required: [name, version, alias]
+      properties:
+        name: {type: string}
+        version: {type: string}
+        alias: {type: string, enum: [champion, challenger]}
+    PredictResponse:
+      type: object
+      required: [duration_minutes, model]
+      properties:
+        duration_minutes: {type: number, exclusiveMinimum: 0}
+        model: {$ref: "#/components/schemas/ModelRef"}
+    LoadedModel:
+      type: object
+      required: [name, version, alias, tags, loaded_at]
+      properties:
+        name: {type: string}
+        version: {type: string}
+        alias: {type: string, enum: [champion, challenger]}
+        tags:
+          type: object
+          additionalProperties: {type: string}
+          description: The version's tags (contracts/mlflow.yaml version_tags).
+        loaded_at: {type: string, format: date-time}
+    ReloadResponse:
+      type: object
+      required: [alias, version, previous_version, changed]
+      properties:
+        alias: {type: string, enum: [champion, challenger]}
+        version: {type: string}
+        previous_version: {type: [string, "null"]}
+        changed: {type: boolean}

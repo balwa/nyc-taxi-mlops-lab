@@ -1,0 +1,14 @@
+# Traefik static config. Routing lives in dynamic/ (file provider, watched), which is where
+# S3's blue-green and canary weights go.
+entryPoints:
+  web:
+    address: ":80"
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+api:
+  dashboard: false
+log:
+  level: INFO
+accessLog: {}

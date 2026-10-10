@@ -1,0 +1,29 @@
+# The raw TLC yellow-trip files as they land in the data bucket (runtime.yaml: data.trips).
+# Frozen in S1. The blocking schema_contract check compares each file's Parquet footer with this
+# list *before* COPY: Parquet COPY maps columns by position and fails on a column-count mismatch.
+#
+# Order matters. Names compare case-insensitively (TLC renamed airport_fee to Airport_fee in 2023
+# and positional COPY never sees names). Types are Parquet storage types:
+#   INT32, INT64, DOUBLE, STRING (UTF-8 byte array), TIMESTAMP_MICROS (int64, microseconds).
+# Evolving this file (gameday E4a) is a decision you record and defend, not a fix.
+version: 1
+columns:
+  - {name: VendorID, type: INT32}
+  - {name: tpep_pickup_datetime, type: TIMESTAMP_MICROS}
+  - {name: tpep_dropoff_datetime, type: TIMESTAMP_MICROS}
+  - {name: passenger_count, type: INT64}
+  - {name: trip_distance, type: DOUBLE}
+  - {name: RatecodeID, type: INT64}
+  - {name: store_and_fwd_flag, type: STRING}
+  - {name: PULocationID, type: INT32}
+  - {name: DOLocationID, type: INT32}
+  - {name: payment_type, type: INT64}
+  - {name: fare_amount, type: DOUBLE}
+  - {name: extra, type: DOUBLE}
+  - {name: mta_tax, type: DOUBLE}
+  - {name: tip_amount, type: DOUBLE}
+  - {name: tolls_amount, type: DOUBLE}
+  - {name: improvement_surcharge, type: DOUBLE}
+  - {name: total_amount, type: DOUBLE}
+  - {name: congestion_surcharge, type: DOUBLE}
+  - {name: Airport_fee, type: DOUBLE}

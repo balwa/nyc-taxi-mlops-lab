@@ -1,0 +1,114 @@
+openapi: 3.1.0
+info:
+  title: Ride app API
+  version: 1.0.0
+  description: |
+    Public HTTP API of the `app` service, reached through Traefik on the app host.
+    Frozen in S0. The model-serving API gets its own contract (serving-openapi.yaml) in S3.
+servers:
+  - url: "http://{host}"
+    variables:
+      host:
+        default: localhost
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /version:
+    get:
+      operationId: version
+      summary: What is deployed
+      responses:
+        "200":
+          description: Build provenance of the running container
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Version"}
+  /predict:
+    post:
+      operationId: predict
+      summary: Quote a trip duration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PredictRequest"}
+      responses:
+        "200":
+          description: Quoted duration and the model that produced it
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PredictResponse"}
+        "422":
+          description: Request failed validation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ValidationError"}
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {const: ok}
+    Version:
+      type: object
+      required: [service, git_sha, image_tag]
+      properties:
+        service: {type: string}
+        git_sha:
+          type: string
+          description: Full or short commit SHA the image was built from, or "unknown" for local builds.
+          pattern: "^([0-9a-f]{7,40}|unknown)$"
+        image_tag: {type: string}
+    PredictRequest:
+      type: object
+      additionalProperties: false
+      required: [pickup_zone_id, dropoff_zone_id, pickup_datetime]
+      properties:
+        pickup_zone_id:
+          type: integer
+          minimum: 1
+          maximum: 263
+          description: TLC taxi zone id (264 and 265 are unknown/outside NYC and not accepted).
+        dropoff_zone_id:
+          type: integer
+          minimum: 1
+          maximum: 263
+        pickup_datetime:
+          type: string
+          format: date-time
+          description: ISO 8601. Times without an offset are New York local time; others are converted to it.
+        trip_distance_miles:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100
+          description: Optional. When absent, the serving layer estimates it from the zone pair.
+    PredictResponse:
+      type: object
+      required: [duration_minutes, model]
+      properties:
+        duration_minutes:
+          type: number
+          exclusiveMinimum: 0
+        model:
+          type: object
+          required: [name, version]
+          properties:
+            name: {type: string}
+            version: {type: string}
+            alias:
+              type: [string, "null"]
+              description: MLflow alias the version was loaded by (champion or challenger), null for the static baseline.
+    ValidationError:
+      type: object
+      required: [detail]
+      properties:
+        detail: {}

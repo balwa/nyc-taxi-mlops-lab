@@ -1,0 +1,43 @@
+{
+  "description": "MCP tool contract for the support assistant (S7). Frozen in S0 so the LLM bench and the MCP server use the same schemas.",
+  "tools": [
+    {
+      "name": "get_model_info",
+      "description": "Version, training window and evaluation metrics of the model currently serving predictions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "predict_duration",
+      "description": "Predict the duration in minutes of a yellow-taxi trip between two NYC TLC taxi zones, using the champion model.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pickup_zone": {"type": "string", "description": "TLC taxi zone name for the pickup, e.g. 'JFK Airport' or 'Times Sq/Theatre District'."},
+          "dropoff_zone": {"type": "string", "description": "TLC taxi zone name for the dropoff."},
+          "hour": {"type": "integer", "minimum": 0, "maximum": 23, "description": "Pickup hour, 24h clock, New York local time."},
+          "day_of_week": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]}
+        },
+        "required": ["pickup_zone", "dropoff_zone", "hour", "day_of_week"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "query_zone_stats",
+      "description": "Historical trip statistics for one pickup zone from the zone_hour_stats mart.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "zone": {"type": "string", "description": "TLC taxi zone name."},
+          "metric": {"type": "string", "enum": ["trip_count", "median_duration_min", "p90_duration_min"]},
+          "hour": {"type": "integer", "minimum": 0, "maximum": 23, "description": "Optional: restrict to one pickup hour."}
+        },
+        "required": ["zone", "metric"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

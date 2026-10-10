@@ -1,0 +1,64 @@
+# Pipeline status for the grader (given in S1): every 20 minutes the platform host's runner asks the
+# local Dagster webserver what's loaded and what the checks say, and uploads it as an artifact. The
+# grader can't reach your Dagster (no ingress), so this is how the scoreboard sees your pipeline.
+# Read-only, and off until LAB_PLATFORM=on. While the hosts are stopped, runs wait for the runner; the
+# concurrency group keeps only the newest one waiting. After Start Lab the runner is up before Dagster,
+# so the query retries for up to five minutes.
+name: status
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: status
+  cancel-in-progress: true
+
+jobs:
+  status:
+    if: vars.LAB_PLATFORM == 'on'
+    runs-on: [self-hosted, lab-platform]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Query Dagster
+        run: |
+          for _ in $(seq 1 30); do
+            if docker exec platform-webserver-1 python -m labpipes.status > lab-status.json; then
+              # From S5: what Alloy on this host is sending.
+              jq --argjson alloy "$(observability/alloy-stats.sh)" '. + {alloy: $alloy}' lab-status.json > s.json && mv s.json lab-status.json
+              cat lab-status.json
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Dagster didn't answer with a loaded code location within 5 minutes" >&2
+          exit 1
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: lab-status
+          path: lab-status.json
+          retention-days: 2
+
+  # From S3: the app host's side (live colour, each colour's tag, the models serving has loaded).
+  app-host:
+    if: vars.LAB_SERVING == 'on'
+    runs-on: [self-hosted, lab-app]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Query the app host
+        run: |
+          # From S7: the MCP server's tools and what its database user may do.
+          mcp=$(docker exec lab-mcp-mcp-1 python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8002/healthz?db=1', timeout=60).read().decode())" 2>/dev/null || echo '{"error": "MCP server not running"}')
+          deploy/web.sh status | jq --argjson alloy "$(observability/alloy-stats.sh)" --argjson mcp "$mcp" '. + {alloy: $alloy, mcp: $mcp}' > lab-status-app.json
+          cat lab-status-app.json
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: lab-status-app
+          path: lab-status-app.json
+          retention-days: 2

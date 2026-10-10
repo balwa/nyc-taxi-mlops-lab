@@ -1,0 +1,66 @@
+# Observability CD (given in S5): check the SLO rules, deploy Alloy on the app and platform hosts, and
+# load the rules into your Grafana Cloud stack. Nothing about Grafana Cloud is in GitHub: the hosts read
+# lab/grafana from Secrets Manager with their instance profile.
+#
+# Off until you've put the Grafana Cloud credentials in Secrets Manager (stages/S5.md) and set:
+#   gh variable set LAB_OBSERVABILITY --body on
+# Push-triggered only: a fork's pull request can't run anything here.
+name: observability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "observability/**"
+      - "deploy/compose.observability.yaml"
+      - ".github/workflows/observability.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: vars.LAB_OBSERVABILITY == 'on'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: promtool on the rules and their tests
+        run: observability/push-rules.sh --check-only
+
+  alloy:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [app, platform]
+    runs-on: [self-hosted, "lab-${{ matrix.host }}"]
+    env:
+      LAB_HOST: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Deploy Alloy
+        run: |
+          docker network inspect lab >/dev/null 2>&1 || docker network create lab >/dev/null
+          # --force-recreate re-reads lab/grafana and the config, so a rotated token or a rule change lands.
+          docker compose -f deploy/compose.observability.yaml up -d --force-recreate --wait
+      - name: Is it sending?
+        # Two minutes of scrapes, then: something sent, nothing refused (a wrong token is refused).
+        run: |
+          sleep 120
+          stats=$(observability/alloy-stats.sh)
+          echo "$LAB_HOST: $stats"
+          jq -e '.samples_sent > 0 and .samples_failed == 0' <<<"$stats" >/dev/null ||
+            { docker logs --tail 30 lab-obs-alloy-1 2>&1 | grep -E 'level=(error|warn)' >&2; exit 1; }
+
+  rules:
+    needs: check
+    runs-on: [self-hosted, lab-app]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Load the rules into Grafana Cloud
+        run: observability/push-rules.sh

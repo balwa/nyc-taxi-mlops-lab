@@ -1,0 +1,22 @@
+# The MCP server on the app host (S7, given): the assistant's tools, on the shared `lab` network only
+# (runtime.yaml: mcp, port 8002, path /mcp). Never published: the app reaches it as http://mcp:8002/mcp.
+# Deployed by .github/workflows/mcp.yaml.
+name: lab-mcp
+
+services:
+  mcp:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/mcp:${MCP_TAG:?set MCP_TAG}
+    restart: unless-stopped
+    expose:
+      - "8002"
+    environment:
+      AWS_REGION: us-east-1
+      SERVING_URL: http://traefik:8001
+      REDSHIFT_CLUSTER_ID: ${REDSHIFT_CLUSTER_ID:-lab}
+      REDSHIFT_DATABASE: ${REDSHIFT_DATABASE:-lab}
+      MCP_DB_USER: ${MCP_DB_USER:-lab_ro}
+
+networks:
+  default:
+    name: lab
+    external: true

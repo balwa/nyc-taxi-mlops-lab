@@ -1,0 +1,32 @@
+[project]
+name = "labpipes"
+version = "0.1.0"
+description = "Dagster pipelines: trip ingestion into Redshift (S1), then training (S2) and the wiki RAG branch (S6)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  # Dagster is pinned (AGENTS.md). Libraries version as 0.(core minor + 16).patch.
+  "dagster==1.13.25",
+  "dagster-webserver==1.13.25",
+  "dagster-postgres==0.29.25",
+  "boto3==1.43.109",
+  "pyarrow==25.0.1",
+  "pyyaml==6.0.3",
+  # S2: training and tracking. mlflow (full) because the same image runs the tracking server.
+  "mlflow==3.17.0",
+  "lightgbm==4.7.0",
+  "pandas==3.0.6",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/labpipes", "src/tripmodel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::dagster.BetaWarning", "ignore::dagster.PreviewWarning"]

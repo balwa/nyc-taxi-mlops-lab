@@ -1,0 +1,5 @@
+# SLO recording and alerting rules (S5, decision 013), evaluated by your Grafana Cloud stack's ruler.
+# Prometheus rule format: https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/
+# Metric names are contracts/metrics.yaml's. `make check` runs promtool on this file and on any
+# *.test.yaml next to it.
+groups: []

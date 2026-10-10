@@ -1,0 +1,78 @@
+# Teardown (given in S10): destroy everything Terraform made, delete the state bucket, and prove the
+# account is empty. Runs on a GitHub-hosted runner, so it's the one workflow that needs session
+# credentials: run scripts/gh-secrets.sh first (they die with the session).
+#
+#   gh workflow run destroy.yaml -f confirm=<this repository's name>
+#
+# Gated twice: the confirm input must be the repository's name, and the job waits in the `production`
+# environment for your approval. The result (scripts/verify-teardown.sh) is the `teardown` artifact.
+name: destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type this repository's name to destroy every AWS resource of the lab
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: destroy
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    if: inputs.confirm == github.event.repository.name
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 45
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ""
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.16.3
+          terraform_wrapper: false
+      - name: Credentials
+        run: |
+          arn=$(aws sts get-caller-identity --query Arn --output text) ||
+            { echo "the AWS_* secrets are missing or expired: run scripts/gh-secrets.sh with this session's credentials" >&2; exit 1; }
+          echo "acting as ${arn##*/}"
+          echo "STATE_BUCKET=lab-tfstate-$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+      - name: Terraform destroy
+        run: |
+          terraform -chdir=infra/live init -input=false -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config=key=lab/terraform.tfstate -backend-config=region=us-east-1 -backend-config=use_lockfile=true
+          # Values only matter for creating things; destroy reads the state.
+          terraform -chdir=infra/live destroy -input=false -auto-approve -var 'ingress_cidrs=["127.0.0.1/32"]' \
+            -var "github_repo=${{ github.repository }}"
+          [ -z "$(terraform -chdir=infra/live state list)" ] || { echo "state isn't empty after destroy" >&2; exit 1; }
+      - name: State bucket and leftovers
+        run: |
+          aws s3api list-object-versions --bucket "$STATE_BUCKET" --output json |
+            jq -c '{Objects: ([.Versions[]?, .DeleteMarkers[]?] | map({Key, VersionId})), Quiet: true}' > /tmp/versions.json
+          jq -e '.Objects | length > 0' /tmp/versions.json >/dev/null && aws s3api delete-objects --bucket "$STATE_BUCKET" --delete file:///tmp/versions.json >/dev/null
+          aws s3api delete-bucket --bucket "$STATE_BUCKET"
+          # SageMaker's log group isn't Terraform's; it costs (almost) nothing, but it's yours.
+          aws logs delete-log-group --log-group-name /aws/sagemaker/NotebookInstances 2>/dev/null || true
+      - name: Verify
+        if: always()
+        run: |
+          rc=0
+          scripts/verify-teardown.sh > teardown.txt || rc=$?
+          [ -s teardown.txt ] && cat teardown.txt || echo "nothing left"
+          exit $rc
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: teardown
+          path: teardown.txt
+          retention-days: 7

@@ -1,0 +1,82 @@
+# Metrics contract: the names and labels that dashboards, SLO rules, alerts and S8's canary depend on.
+# Frozen in S5. Services may add metrics; they never rename these, drop a label, or add a label whose
+# values aren't bounded (no raw paths, ids, timestamps or user input as label values).
+#
+# Services serve them on /metrics, on their own port, inside the Docker network only: Traefik's public
+# entrypoint never routes /metrics, and Alloy scrapes containers directly.
+
+version: 1
+
+services:
+  app:
+    port: 8000
+    path: /metrics
+    metrics:
+      lab_http_requests_total:
+        type: counter
+        help: HTTP requests the app answered.
+        labels:
+          route: the route template (/predict, /version, /healthz), never the raw path; "other" for 404s
+          method: HTTP method
+          code: status code, e.g. "200"
+      lab_http_request_duration_seconds:
+        type: histogram
+        help: Time from request to response, inside the app.
+        labels:
+          route: as above
+          method: HTTP method
+        buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]
+      lab_predictions_total:
+        type: counter
+        help: Quotes given, by who produced them.
+        labels:
+          source: "model when serving answered, fallback when the static median did"
+          alias: serving's alias (champion or challenger); empty for the fallback
+          version: the model version; empty for the fallback
+      lab_serving_request_duration_seconds:
+        type: histogram
+        help: The app's call to serving, through Traefik.
+        labels:
+          outcome: "ok, timeout, unavailable (503: no model), or error"
+        buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5]
+
+  serving:
+    port: 8001
+    path: /metrics
+    metrics:
+      lab_model_predict_duration_seconds:
+        type: histogram
+        help: One /predict inside serving, model call included.
+        labels:
+          alias: champion or challenger
+          version: the loaded model version
+        buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25]
+      lab_model_info:
+        type: gauge
+        help: 1 for the version this container serves; absent before its first load.
+        labels:
+          alias: champion or challenger
+          version: the loaded model version
+      lab_model_reloads_total:
+        type: counter
+        help: Reloads asked for (POST /reload and start-up loads).
+        labels:
+          alias: champion or challenger
+          outcome: "changed, unchanged, or failed"
+
+  # Traefik's own metrics (deploy/traefik/web/traefik.yaml): per-service request counts and latency,
+  # which is what the S8 canary compares between serving-champion and serving-challenger.
+  traefik:
+    port: 8082
+    path: /metrics
+    service_label_values:
+      app: [app-blue@file, app-green@file, app-live@file]
+      serving: [serving-champion@file, serving-challenger@file, serving-live@file]
+
+# Added by Alloy to every series it sends.
+external_labels:
+  host: app, platform or llm
+
+# Grafana Cloud's free tier: active series for all hosts together. How to stay under it is decision 014.
+budget:
+  active_series: 10000

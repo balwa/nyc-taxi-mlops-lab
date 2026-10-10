@@ -1,0 +1,20 @@
+#!/bin/bash
+# lab-${role} first boot: Docker, Compose, and a `runner` user for the self-hosted GitHub runner.
+# Progress: /var/log/lab-setup.log. Done when /var/lib/lab-setup-done exists.
+set -euxo pipefail
+exec > >(tee -a /var/log/lab-setup.log) 2>&1
+
+hostnamectl set-hostname "lab-${role}"
+dnf install -y docker git jq libicu tar sudo
+systemctl enable --now docker
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  "https://github.com/docker/compose/releases/download/v${compose_version}/docker-compose-linux-$(uname -m)"
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
+usermod -aG docker runner
+install -d -o runner -g runner /opt/actions-runner
+
+touch /var/lib/lab-setup-done

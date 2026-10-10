@@ -1,0 +1,109 @@
+# Serving (given in S3): test and build the serving image, then run both serving containers on the app
+# host (deploy/compose.serving.yaml) through its self-hosted runner. Like platform.yaml, it stays off until
+# you set the repository variables (stages/S3.md):
+#   gh variable set LAB_SERVING --body on
+#   gh variable set MLFLOW_TRACKING_URI --body "http://$(terraform -chdir=infra/live output -raw platform_private_ip):5000"
+# Push-triggered only: a fork's pull request can't run anything here.
+name: serving
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "serving/**"
+      - "deploy/compose.serving.yaml"
+      - ".github/workflows/serving.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serving
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: vars.LAB_SERVING == 'on'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: make test-serving
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.img.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Image name and tag
+        id: img
+        run: |
+          echo "prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: serving
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.img.outputs.prefix }}/serving:${{ steps.img.outputs.tag }}
+          build-args: GIT_SHA=${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=serving
+          cache-to: type=gha,scope=serving,mode=max
+      - name: The app loads inside the image
+        run: |
+          docker run --rm --entrypoint python "${{ steps.img.outputs.prefix }}/serving:${{ steps.img.outputs.tag }}" \
+            -c "import servingapp.main, lightgbm, mlflow.pyfunc; print('serving imports ok')"
+
+  deploy:
+    needs: image
+    runs-on: [self-hosted, lab-app]
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SERVING_TAG: ${{ needs.image.outputs.tag }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy both aliases
+        run: |
+          export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          deploy/web.sh init  # not prepare: Traefik is your CD's, and may still be S0's
+          docker compose -f deploy/compose.serving.yaml pull
+          docker compose -f deploy/compose.serving.yaml up -d --wait
+      - name: What serving has loaded
+        # Asked inside each container: Traefik's port 8001 only exists once your CD runs the S3 stack.
+        # 503 before the first promotion is expected: there is no champion yet.
+        run: |
+          for alias in champion challenger; do
+            docker exec "lab-serving-serving-$alias-1" python -c '
+          import time, urllib.error, urllib.request
+          for _ in range(20):
+              try:
+                  print(urllib.request.urlopen("http://localhost:8001/model").read().decode()); break
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()
+                  if "not found" in body: print(body); break
+                  time.sleep(3)
+          else:
+              print(body)' > "/tmp/$alias.json"
+            echo "$alias: $(cat "/tmp/$alias.json")"
+          done

@@ -1,0 +1,6 @@
+# Self-hosted runner labels, one per host (contracts/runtime.yaml).
+self-hosted-runner:
+  labels:
+    - lab-app
+    - lab-platform
+    - lab-llm

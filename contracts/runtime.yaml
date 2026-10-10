@@ -1,0 +1,57 @@
+# Runtime contract: every name, port and path that crosses a host, service or tool boundary.
+# Frozen in S0. Later stages add services that are already named here; they don't rename them.
+
+version: 1
+region: us-east-1
+
+# Three EC2 hosts. Shell and UIs go through SSM Session Manager; there is no SSH.
+hosts:
+  platform: {runs: [dagster, mlflow], runner_label: lab-platform}
+  app: {runs: [traefik, app, serving, mcp], runner_label: lab-app}
+  llm: {runs: [llm-chat, llm-embed], runner_label: lab-llm}
+
+services:
+  traefik: {host: app, port: 80}
+  app: {host: app, port: 8000, health: /healthz, image: app}
+  serving: {host: app, port: 8001, health: /healthz, image: serving}
+  mcp: {host: app, port: 8002, path: /mcp, image: mcp}
+  mlflow: {host: platform, port: 5000}
+  dagster: {host: platform, port: 3000}
+  llm-chat: {host: llm, port: 8080, api: openai-compatible}
+  llm-embed: {host: llm, port: 8081, api: openai-compatible}
+
+# Images are arm64 (all hosts are Graviton). Names are lowercase; the tag scheme is the student's decision.
+images:
+  name: "ghcr.io/{owner}/{repo}/{image}"
+
+# Environment variables read by services. Values come from Compose or Secrets Manager.
+env:
+  IMAGE_TAG: tag of the image the stack runs
+  GIT_SHA: commit the image was built from
+  SERVING_URL: base URL of the serving service, as seen from app and mcp
+  MLFLOW_TRACKING_URI: MLflow server URL, as seen from platform and app hosts
+  LAB_DATA_BUCKET: the instructor's public data bucket
+  LAB_ARTIFACT_BUCKET: the student's own bucket (MLflow artifacts, training sets)
+
+# The instructor's data bucket. Sensors list trips/ only; everything else is fetched by key.
+data:
+  trips: "trips/yellow_tripdata_{yyyy}-{mm}.parquet"
+  zones: reference/taxi_zone_lookup.csv
+  events: events/
+
+# Secrets Manager names (JSON payloads).
+secrets:
+  wiki: {name: lab/wiki, keys: [url, token]}
+
+# Terraform outputs that scripts and the grader read from infra/live.
+terraform_outputs:
+  - app_public_ip
+  - app_instance_id
+  - platform_instance_id
+  - llm_instance_id
+  - rds_endpoint
+  - artifact_bucket
+
+# Tags on every AWS resource; the teardown script finds resources by them.
+tags:
+  project: mlops-lab
